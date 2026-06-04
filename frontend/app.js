@@ -5,9 +5,20 @@
  */
 
 // ═══════════════════════════════════════════════════════════
-// CONFIG
+// API CLIENT (GraphQL)
 // ═══════════════════════════════════════════════════════════
-const API = '/nc-api';
+const GQL = '/nc-api/graphql';
+
+async function gql(query, variables = {}) {
+  const res = await fetch(GQL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, variables })
+  });
+  const data = await res.json();
+  if (data.errors) throw new Error(data.errors.map(e => e.message).join(', '));
+  return data.data;
+}
 
 // ═══════════════════════════════════════════════════════════
 // STATE
@@ -16,24 +27,13 @@ const state = {
   projects: [],
   activeProject: null,
   activePage: null,
-  view: 'board',       // 'board' | 'edit' | 'galaxy'
+  view: 'board',       // 'board' | 'edit' | 'galaxy' | 'sync'
   board: { x: 0, y: 0, zoom: 1, dragging: false, dragStart: { x: 0, y: 0 } },
   editor: { tool: 'select', selectedElement: null, clipboard: null },
   galaxy: { rotation: 0, targetRotation: 0 },
-  syncConfig: { type: 'api', host: '', path: '', username: '', password: '', apiKey: '' }
+  syncConfig: { type: 'api', host: '', path: '', username: '', password: '', apiKey: '' },
+  pipeline: { running: false, stage: '', progress: 0 }
 };
-
-// ═══════════════════════════════════════════════════════════
-// API CLIENT
-// ═══════════════════════════════════════════════════════════
-async function api(path, opts = {}) {
-  const res = await fetch(API + path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts
-  });
-  if (!res.ok && res.status !== 201) throw new Error(`API ${res.status}`);
-  return res.json();
-}
 
 // ═══════════════════════════════════════════════════════════
 // DOM SETUP
@@ -1067,17 +1067,38 @@ document.getElementById('nc-delete-el').onclick = () => {
 
 document.getElementById('nc-save-page').onclick = async () => {
   if (!state.activeProject || !state.activePage) return;
-  const pageW = state.activeProject.pages[state.activePage].width || 800;
-  const pageH = state.activeProject.pages[state.activePage].height || 600;
+  const pageW = state.activeProject.pages[state.activePage]?.width || 800;
+  const pageH = state.activeProject.pages[state.activePage]?.height || 600;
   const html = elementsToHTML(editorElements, pageW, pageH);
   try {
-    await api(`/projects/${state.activeProject.id}/pages/${state.activePage}`, {
-      method: 'PUT',
-      body: JSON.stringify({ html })
+    // Save via GraphQL
+    await gql(`mutation($pid: ID!, $pageId: ID!, $html: String) { updatePage(projectId: $pid, pageId: $pageId, html: $html) { id } }`, {
+      pid: state.activeProject.id, pageId: state.activePage, html
     });
-    // Update local state
-    state.activeProject.pages[state.activePage].html = html;
-    showNotification('Page saved!');
+    // Run the agent pipeline: ingest → research → update → validate
+    showNotification('Running agent pipeline...');
+    const pipelineResult = await gql(`mutation($pid: ID!, $pageId: ID!, $html: String!, $query: String!) {
+      fullPipeline(projectId: $pid, pageId: $pageId, html: $html, query: $query) {
+        ingest { wordCount entityCount linkCount }
+        research { suggestions }
+        updated { changes }
+        validation { valid score issues { message } warnings { message } }
+        finalHtml
+      }
+    }`, {
+      pid: state.activeProject.id,
+      pageId: state.activePage,
+      html,
+      query: state.activeProject.pages[state.activePage]?.title || ''
+    });
+
+    // Update with enriched HTML from pipeline
+    if (pipelineResult.fullPipeline?.finalHtml) {
+      state.activeProject.pages[state.activePage].html = pipelineResult.fullPipeline.finalHtml;
+    }
+
+    const v = pipelineResult.fullPipeline?.validation;
+    showNotification(`Saved! Agent: ${pipelineResult.fullPipeline?.ingest?.entityCount || 0} entities found, ${pipelineResult.fullPipeline?.updated?.changes || 0} enrichments. Validation: ${v?.score || 0}/100`);
   } catch (e) {
     showNotification('Save failed: ' + e.message);
   }
@@ -1303,14 +1324,13 @@ function createProjectFromSync(syncId) {
 async function confirmCreateFromSync(syncId) {
   const name = document.getElementById('sync-project-name').value || 'Imported Wiki';
   try {
-    const project = await api('/projects', { method: 'POST', body: JSON.stringify({ name, description: `Synced from remote wiki (${syncId})` }) });
+    const data = await gql(`mutation($name: String, $desc: String) { createProject(name: $name, description: $desc) { id name } }`, { name, description: description || '' });
+    const project = data.createProject;
 
     // Add synced pages to project
-    const syncResult = await api(`/sync/${syncId}`);
-    for (const page of (syncResult.importedPages || [])) {
-      await api(`/projects/${project.id}/pages`, {
-        method: 'POST',
-        body: JSON.stringify({ title: page.title, html: page.html })
+    for (const page of (syncResult?.importedPages || [])) {
+      await gql(`mutation($pid: ID!, $title: String, $html: String) { createPage(projectId: $pid, title: $title, html: $html) }`, {
+        pid: project.id, title: page.title, html: page.html
       });
     }
 
@@ -1328,7 +1348,8 @@ async function confirmCreateFromSync(syncId) {
 // ═══════════════════════════════════════════════════════════
 async function loadProjects() {
   try {
-    state.projects = await api('/projects');
+    const data = await gql('{ projects { id name description updatedAt pages { id title } } }');
+    state.projects = data.projects;
     renderProjectList();
     updateSyncTargetSelect();
     updateGalaxyNodes();
@@ -1359,7 +1380,8 @@ function updateSyncTargetSelect() {
 
 async function openProject(id) {
   try {
-    state.activeProject = await api(`/projects/${id}`);
+    const data = await gql(`query($id: ID!) { project(id: $id) { id name description pages { id title html width height x y } } }`, { id });
+    state.activeProject = data.project;
     state.view = 'board';
     state.activePage = null;
     updateViewTabs();
@@ -1373,10 +1395,8 @@ async function openProject(id) {
 async function addPage() {
   if (!state.activeProject) return showNotification('Open a project first');
   try {
-    const page = await api(`/projects/${state.activeProject.id}/pages`, {
-      method: 'POST',
-      body: JSON.stringify({ title: 'New Page', html: '<div class="nc-page"><h1>New Page</h1><p>Start editing...</p></div>' })
-    });
+    const data = await gql(`mutation($pid: ID!, $title: String, $html: String) { createPage(projectId: $pid, title: $title, html: $html) { id title html } }`, { pid: state.activeProject.id, title: 'New Page', html: '<div class="nc-page"><h1>New Page</h1><p>Start editing...</p></div>' });
+    const page = data.createPage;
     state.activeProject.pages[page.id] = page;
     renderBoard();
     openPageEditor(page);
@@ -1400,7 +1420,8 @@ async function confirmNewProject() {
   const name = document.getElementById('new-project-name').value || 'Untitled';
   const description = document.getElementById('new-project-desc').value;
   try {
-    const project = await api('/projects', { method: 'POST', body: JSON.stringify({ name, description }) });
+    const data = await gql(`mutation($name: String, $desc: String) { createProject(name: $name, description: $desc) { id name } }`, { name, description: description || '' });
+    const project = data.createProject;
     closeModal();
     await loadProjects();
     openProject(project.id);
@@ -1493,10 +1514,8 @@ window.addEventListener('resize', () => {
 // Seed demo data if no projects
 async function seedDemo() {
   if (state.projects.length === 0) {
-    const demo = await api('/projects', {
-      method: 'POST',
-      body: JSON.stringify({ name: 'The Conglomerate Group', description: 'Main knowledge base' })
-    });
+    const data = await gql(`mutation { createProject(name: "The Conglomerate Group", description: "Main knowledge base") { id } }`);
+    const demo = data.createProject;
 
     const pages = [
       { title: 'Welcome', html: '<div class="nc-page"><h1>Welcome to NeuroCanvas</h1><p>This is your visual HTML editor. Drag and drop primitives to build pages.</p><p>Connect to a remote wiki via <strong>Sync</strong> to import your knowledge base.</p></div>' },
@@ -1506,7 +1525,7 @@ async function seedDemo() {
     ];
 
     for (const p of pages) {
-      await api(`/projects/${demo.id}/pages`, { method: 'POST', body: JSON.stringify(p) });
+      await gql(`mutation($pid: ID!, $title: String, $html: String) { createPage(projectId: $pid, title: $title, html: $html) }`, { pid: demo.id, title: p.title, html: p.html });
     }
 
     state.projects = await api('/projects');
