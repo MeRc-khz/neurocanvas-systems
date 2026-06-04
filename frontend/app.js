@@ -96,13 +96,15 @@ app.innerHTML = `
           <button id="nc-back-board" class="nc-btn">← Back</button>
         </div>
       </div>
-      <div id="nc-editor-canvas-wrap">
-        <canvas id="nc-editor-canvas"></canvas>
-      </div>
-      <div id="nc-editor-properties">
-        <h3>Properties</h3>
-        <div id="nc-props-content">
-          <p class="nc-hint">Select an element to edit properties</p>
+      <div id="nc-editor-body">
+        <div id="nc-editor-canvas-wrap">
+          <canvas id="nc-editor-canvas"></canvas>
+        </div>
+        <div id="nc-editor-properties">
+          <h3>Properties</h3>
+          <div id="nc-props-content">
+            <p class="nc-hint">Select an element to edit properties</p>
+          </div>
         </div>
       </div>
     </div>
@@ -246,12 +248,14 @@ style.textContent = `
 
 /* Sidebar */
 #nc-sidebar {
+  grid-column: 1;
   background: #0f0f0f;
   border-right: 1px solid #1a1a1a;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   transition: width 0.2s;
+  width: 240px;
 }
 #nc-sidebar.collapsed { width: 40px; }
 #nc-sidebar-header {
@@ -272,7 +276,7 @@ style.textContent = `
 .nc-project-item-meta { font-size: 11px; color: #555; }
 
 /* Main area */
-#nc-main { position: relative; overflow: hidden; }
+#nc-main { position: relative; overflow: hidden; grid-column: 2; }
 .nc-view { display: none; position: absolute; inset: 0; }
 .nc-view.active { display: block; }
 
@@ -348,6 +352,7 @@ style.textContent = `
   display: flex; align-items: center; gap: 8px;
   padding: 8px 16px; background: #111;
   border-bottom: 1px solid #222;
+  flex-shrink: 0;
 }
 .nc-toolbar-group { display: flex; align-items: center; gap: 4px; padding-right: 12px; border-right: 1px solid #222; }
 .nc-toolbar-group:last-child { border-right: none; }
@@ -358,13 +363,14 @@ style.textContent = `
 }
 .nc-tool-btn:hover, #nc-editor-toolbar button:hover { background: #1a1a1a; color: #ccc; }
 .nc-tool-btn.active { background: #1c2721; color: #2bee8c; border-color: #2bee8c33; }
+#nc-editor-body { display: flex; flex: 1; overflow: hidden; position: relative; }
 #nc-editor-canvas-wrap { flex: 1; position: relative; }
 #nc-editor-canvas { width: 100%; height: 100%; }
 #nc-editor-properties {
   width: 260px; background: #0f0f0f;
   border-left: 1px solid #1a1a1a;
   padding: 16px; overflow-y: auto;
-  position: absolute; right: 0; top: 0; bottom: 0;
+  flex-shrink: 0;
 }
 #nc-editor-properties h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: #555; margin-bottom: 12px; }
 .nc-prop-group { margin-bottom: 12px; }
